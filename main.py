@@ -72,9 +72,20 @@ def add_exif_data(image_path: Path, memory: Memory):
         img.datetime = dt_str
 
         if memory.latitude is not None and memory.longitude is not None:
-            img.gps_latitude = (abs(memory.latitude),)
+            # Convert decimal degrees to degrees, minutes, seconds
+            def decimal_to_dms(decimal):
+                degrees = int(abs(decimal))
+                minutes_decimal = (abs(decimal) - degrees) * 60
+                minutes = int(minutes_decimal)
+                seconds = (minutes_decimal - minutes) * 60
+                return (degrees, minutes, seconds)
+            
+            lat_dms = decimal_to_dms(memory.latitude)
+            lon_dms = decimal_to_dms(memory.longitude)
+            
+            img.gps_latitude = lat_dms
             img.gps_latitude_ref = "N" if memory.latitude >= 0 else "S"
-            img.gps_longitude = (abs(memory.longitude),)
+            img.gps_longitude = lon_dms
             img.gps_longitude_ref = "E" if memory.longitude >= 0 else "W"
 
         with open(image_path, "wb") as f:
