@@ -10,6 +10,7 @@ from datetime import timezone
 from pathlib import Path
 import io
 import zipfile
+from enum import Enum
 from PIL import Image
 import tempfile
 from zoneinfo import ZoneInfo
@@ -19,8 +20,22 @@ from pydantic import BaseModel, Field, field_validator
 from tqdm.asyncio import tqdm
 from tzlocal import get_localzone
 
+
+class MediaType(str, Enum):
+    """Enum for supported media types."""
+    IMAGE = "image"
+    VIDEO = "video"
+    
+    @classmethod
+    def _missing_(cls, value):
+        """Raise error for unsupported media types."""
+        if value:
+            raise ValueError(f"Unsupported media type: '{value}'. Must be 'image' or 'video'")
+        return super()._missing_(value)
+
 # Global configuration
 ffmpeg_path: str = "ffmpeg"
+ffmpeg_available: bool = False
 overlay_mode: str = "none"
 overlay_naming: str = "separate-folders"
 output_dir: Path = Path("./downloads")
@@ -32,7 +47,7 @@ filename_prefix: str = ""
 
 class Memory(BaseModel):
     date: datetime = Field(alias="Date")
-    media_type: str = Field(alias="Media Type")
+    media_type: MediaType = Field(alias="Media Type")
     media_download_url: str = Field(alias="Media Download Url")  # Direct AWS CDN URL - has overlays (ZIP), rate limited
     download_link: str = Field(default="", alias="Download Link")  # Snapchat endpoint - requires POST returns AWS URL, no overlays, no rate limit
     location: str = Field(default="", alias="Location")
@@ -52,6 +67,14 @@ class Memory(BaseModel):
             return dt
         return v
 
+    @field_validator("media_type", mode="before")
+    @classmethod
+    def parse_media_type(cls, v):
+        if isinstance(v, str):
+            # Convert to lowercase for enum matching (Image -> image, Video -> video)
+            normalized = v.lower()
+            return MediaType(normalized)
+        return v
 
     def model_post_init(self, __context):
         if self.location and not self.latitude:
@@ -61,7 +84,7 @@ class Memory(BaseModel):
 
     def get_filename(self, has_overlay: bool = False) -> str:
         """Get filename with optional '_overlayed' suffix for overlaid versions."""
-        ext = ".jpg" if self.media_type.lower() == "image" else ".mp4"
+        ext = ".jpg" if self.media_type == MediaType.IMAGE else ".mp4"
         base_name = self.date.strftime('%Y-%m-%d_%H-%M-%S')
         overlay_suffix = "_overlayed" if has_overlay else ""
         prefix = f"{filename_prefix}_" if filename_prefix else ""
@@ -268,39 +291,26 @@ def apply_metadata_and_timestamps(memory: Memory, add_exif: bool) -> None:
         if memory.path_with_overlay.exists():
             os.utime(memory.path_with_overlay, (timestamp, timestamp))
             if add_exif:
-                if memory.media_type.lower() == "image":
+                if memory.media_type == MediaType.IMAGE:
                     add_exif_data(memory.path_with_overlay, memory)
-                elif memory.media_type.lower() == "video":
-                    set_video_metadata(memory.path_with_overlay, memory)
+                elif memory.media_type == MediaType.VIDEO:
+                    if ffmpeg_available:
+                        set_video_metadata(memory.path_with_overlay, memory)
     
     # Apply to path_without_overlay if set
     if memory.path_without_overlay is not None:
         if memory.path_without_overlay.exists():
             os.utime(memory.path_without_overlay, (timestamp, timestamp))
             if add_exif:
-                if memory.media_type.lower() == "image":
+                if memory.media_type == MediaType.IMAGE:
                     add_exif_data(memory.path_without_overlay, memory)
-                elif memory.media_type.lower() == "video":
-                    set_video_metadata(memory.path_without_overlay, memory)
+                elif memory.media_type == MediaType.VIDEO:
+                    if ffmpeg_available:
+                        set_video_metadata(memory.path_without_overlay, memory)
 
 
 
-def convert_webp_to_png(overlay_data: bytes) -> bytes:
-    """Check if overlay is WebP format and convert to PNG in memory if needed."""
-    try:
-        # Check if it's WebP format by looking at RIFF signature
-        if overlay_data.startswith(b'RIFF') and b'WEBP' in overlay_data[:12]:
-            # It's WebP, convert to PNG
-            img = Image.open(io.BytesIO(overlay_data))
-            output = io.BytesIO()
-            img.save(output, format='PNG')
-            return output.getvalue()
-        else:
-            # Not WebP, return as-is
-            return overlay_data
-    except Exception as e:
-        print(f"Failed to convert WebP to PNG: {e}")
-        return overlay_data
+
 
 def merge_image_overlay(output_path: Path, main_data: bytes, overlay_data: bytes | None, memory: Memory | None = None) -> None:
     """Merge image with optional overlay using PIL."""
@@ -329,6 +339,31 @@ def merge_image_overlay(output_path: Path, main_data: bytes, overlay_data: bytes
             print(f"Failed to process image: {e}")
         raise
 
+
+async def _try_ffmpeg_merge(
+    ffmpeg_path: str, main_path: Path, overlay_path: Path, merged_path: Path, overlay_bytes: bytes
+) -> bool:
+    """Attempt ffmpeg merge with given overlay bytes. Returns True if successful."""
+    overlay_path.write_bytes(overlay_bytes)
+    process = await asyncio.create_subprocess_exec(
+        ffmpeg_path,
+        "-y",
+        "-i",
+        str(main_path),
+        "-i",
+        str(overlay_path),
+        "-filter_complex",
+        "[1][0]scale2ref=w=iw:h=ih[overlay][base];[base][overlay]overlay=(W-w)/2:(H-h)/2",
+        "-codec:a",
+        "copy",
+        str(merged_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    return process.returncode == 0
+
+
 async def merge_video_overlay(
     output_path: Path, main_data: bytes, overlay_data: bytes | None, memory: Memory
 ) -> None:
@@ -339,34 +374,43 @@ async def merge_video_overlay(
         main_path.write_bytes(main_data)
 
         if overlay_data:
-            overlay_path = Path(tmpdir) / "overlay.png"
-            overlay_path.write_bytes(overlay_data)
+            # Detect overlay format and apply correct extension
+            is_webp = overlay_data.startswith(b'RIFF') and b'WEBP' in overlay_data[:12]
+            if is_webp:
+                overlay_path = Path(tmpdir) / "overlay.webp"
+            else:
+                overlay_path = Path(tmpdir) / "overlay.png"
+            
             try:
-                process = await asyncio.create_subprocess_exec(
-                    ffmpeg_path,
-                    "-y",
-                    "-i",
-                    str(main_path),
-                    "-i",
-                    str(overlay_path),
-                    "-filter_complex",
-                    "[1][0]scale2ref=w=iw:h=ih[overlay][base];[base][overlay]overlay=(W-w)/2:(H-h)/2",
-                    "-codec:a",
-                    "copy",
-                    str(merged_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await process.communicate()
-                if process.returncode == 0:
+                # First attempt: try with original overlay
+                if await _try_ffmpeg_merge(ffmpeg_path, main_path, overlay_path, merged_path, overlay_data):
                     output_path.write_bytes(merged_path.read_bytes())
                 else:
-                    error_msg = stderr.decode() if stderr else "Unknown error"
-                    print(f"ffmpeg overlay merge failed for {memory.get_filename(True)}: {error_msg}")
-                    memory.fix_paths_on_merge_failure(overlay_mode)
-                    memory.path_without_overlay.write_bytes(main_data)
-                    print(f"Saved version without overlay: {memory.path_without_overlay}")
-                    raise RuntimeError(f"ffmpeg merge failed: {error_msg}")
+                    # Second attempt: try PIL re-encode fallback
+                    print(f"ffmpeg merge failed for {memory.get_filename(True)}, attempting PIL re-encode fix...")
+                    try:
+                        img = Image.open(io.BytesIO(overlay_data))
+                        # Re-save to clean up corruption
+                        with tempfile.NamedTemporaryFile(suffix='.webp' if is_webp else '.png', delete=False) as tmp:
+                            img.save(tmp.name, 'WEBP' if is_webp else 'PNG')
+                            cleaned_overlay_data = Path(tmp.name).read_bytes()
+                            Path(tmp.name).unlink()
+                        
+                        # Retry merge with cleaned overlay
+                        if await _try_ffmpeg_merge(ffmpeg_path, main_path, overlay_path, merged_path, cleaned_overlay_data):
+                            output_path.write_bytes(merged_path.read_bytes())
+                        else:
+                            raise RuntimeError("ffmpeg merge failed even with cleaned overlay")
+                    except Exception as e:
+                        print(f"Warning: PIL re-encode fallback failed: {e}")
+                        raise
+            except Exception:
+                error_msg = "ffmpeg overlay merge failed"
+                print(f"{error_msg} for {memory.get_filename(True)}")
+                memory.fix_paths_on_merge_failure(overlay_mode)
+                memory.path_without_overlay.write_bytes(main_data)
+                print(f"Saved version without overlay: {memory.path_without_overlay}")
+                raise RuntimeError(error_msg)
             except FileNotFoundError as e:
                 print(f"Not found for {memory.get_filename(True)}.")
                 raise
@@ -394,10 +438,6 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
 
             main_data = zf.read(main_file)
             overlay_data = zf.read(overlay_file) if overlay_file else None
-            
-            # Convert WebP overlays to PNG format in memory
-            if overlay_data:
-                overlay_data = convert_webp_to_png(overlay_data)
 
             if overlay_mode == "both":
                 if overlay_naming == "single-folder":
@@ -411,11 +451,11 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
                 # Save version with overlays
                 memory.path_with_overlay = overlay_memory_path
                 memory.path_without_overlay = no_overlay_memory_path
-                if memory.media_type.lower() == "image":
+                if memory.media_type == MediaType.IMAGE:
                     merge_image_overlay(overlay_memory_path, main_data, overlay_data, memory)
                     stats.total_images += 1
                     stats.images_with_overlay += 1
-                elif memory.media_type.lower() == "video":
+                elif memory.media_type == MediaType.VIDEO:
                     await merge_video_overlay(overlay_memory_path, main_data, overlay_data, memory)
                     stats.total_videos += 1
                     stats.videos_with_overlay += 1
@@ -425,7 +465,7 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
                 # Save version without overlays (main only - no merge needed)
                 no_overlay_memory_path.write_bytes(main_data)
                 # Count the extra copy
-                if memory.media_type.lower() == "image":
+                if memory.media_type == MediaType.IMAGE:
                     stats.extra_images_without_overlay += 1
                 else:
                     stats.extra_videos_without_overlay += 1
@@ -433,11 +473,11 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
                 # 'with' mode: save only merged version with overlays to output_path
                 memory_path = output_path / memory.get_filename(has_overlay=True)
                 memory.path_with_overlay = memory_path
-                if memory.media_type.lower() == "image":
+                if memory.media_type == MediaType.IMAGE:
                     merge_image_overlay(memory_path, main_data, overlay_data, memory)
                     stats.total_images += 1
                     stats.images_with_overlay += 1
-                elif memory.media_type.lower() == "video":
+                elif memory.media_type == MediaType.VIDEO:
                     await merge_video_overlay(memory_path, main_data, overlay_data, memory)
                     stats.total_videos += 1
                     stats.videos_with_overlay += 1
@@ -456,7 +496,15 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
             with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
                 for file_info in zf.filelist:
                     file_data = zf.read(file_info.filename)
-                    error_file_path = error_dir / file_info.filename
+                    
+                    # Check if this is an overlay file that's actually WebP
+                    filename_to_save = file_info.filename
+                    if "-overlay" in file_info.filename and file_info.filename.endswith('.png'):
+                        if file_data.startswith(b'RIFF') and b'WEBP' in file_data[:12]:
+                            # Rename from .png to .webp
+                            filename_to_save = file_info.filename.replace('.png', '.webp')
+                    
+                    error_file_path = error_dir / filename_to_save
                     error_file_path.parent.mkdir(parents=True, exist_ok=True)
                     error_file_path.write_bytes(file_data)
                     print(f"  Saved: {error_file_path.relative_to(output_dir)}")
@@ -497,7 +545,7 @@ async def download_memory(
                     memory.path_without_overlay = output_path
                     
                     # Update counters
-                    if memory.media_type.lower() == "image":
+                    if memory.media_type == MediaType.IMAGE:
                         stats.total_images += 1
                         stats.images_without_overlay += 1
                     else:
@@ -636,7 +684,7 @@ async def main():
         "--overlay",
         choices=["none", "with", "both"],
         default="none",
-        help="Overlay handling: 'none' = no overlays (fast), 'with' = with overlays only, 'both' = download with and without overlays into separate folders"
+        help="Overlay handling: 'none' = no overlays (fast), 'with' = with overlays only, 'both' = download with and without overlays (organization controlled by --overlay-naming)"
     )
     parser.add_argument(
         "--overlay-naming",
@@ -652,22 +700,32 @@ async def main():
     )
     args = parser.parse_args()
 
-    # Check if ffmpeg is needed and available
-    if args.overlay in ("with", "both"):
-        try:
-            subprocess.run(
-                [args.ffmpeg_path, "-version"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            print(f"ffmpeg found at: {args.ffmpeg_path}")
-        except (subprocess.CalledProcessError, FileNotFoundError):
+    global ffmpeg_path, ffmpeg_available, overlay_mode, overlay_naming, output_dir, max_concurrent, add_exif, skip_existing, filename_prefix
+
+    # Check ffmpeg availability (always needed for video metadata, optionally for overlays)
+    ffmpeg_available = False
+    try:
+        subprocess.run(
+            [args.ffmpeg_path, "-version"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"ffmpeg found at: {args.ffmpeg_path}")
+        ffmpeg_available = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if args.overlay in ("with", "both"):
             print(f"Error: ffmpeg not found at '{args.ffmpeg_path}'")
+            print("ffmpeg is required for overlay merging.")
             print("Please install ffmpeg or specify correct path with --ffmpeg-path")
             return
-
-    global ffmpeg_path, overlay_mode, overlay_naming, output_dir, max_concurrent, add_exif, skip_existing, filename_prefix
+        else:
+            print(f"Warning: ffmpeg not found at '{args.ffmpeg_path}'")
+            print("ffmpeg is recommended for video metadata (timestamps, GPS, source tag).")
+            print("Without ffmpeg, video metadata will NOT be applied.")
+            response = input("Continue without ffmpeg? (y/n): ").strip().lower()
+            if response != 'y':
+                return
     ffmpeg_path = args.ffmpeg_path
     overlay_mode = args.overlay
     overlay_naming = args.overlay_naming
