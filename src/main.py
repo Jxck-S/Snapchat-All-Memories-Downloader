@@ -14,7 +14,10 @@ from .download import download_all
 def load_memories(json_path: Path) -> list[Memory]:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return [Memory(**item) for item in data["Saved Media"]]
+    
+    memories = [Memory(**item) for item in data["Saved Media"]]
+    print(f"Found {len(memories)} memories in {json_path.name}")
+    return memories
 
 
 async def main():

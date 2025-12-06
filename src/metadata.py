@@ -31,21 +31,22 @@ def _deg_to_rational(dms):
 
 def add_exif_data(image_path: Path, memory: Memory):
     """Add EXIF metadata to an image file.
-    
+
     Embeds the following EXIF data into the image:
-    - DateTime fields: Capture timestamp in UTC for accurate chronological sorting
-    - Software tag: Identifies "Snapchat" as the source application
-    - GPS data: Latitude, longitude, and direction references from memory.location
-    
+    - DateTime fields (legacy): Local capture time without timezone (EXIF does not store TZ)
+    - EXIF 2.31 offsets: `OffsetTime`, `OffsetTimeOriginal`, `OffsetTimeDigitized` as ±HH:MM
+    - Software/Make tags: Identify "Snapchat" as source
+    - GPS data: Latitude/Longitude (DMS) and UTC `GPSDateStamp`/`GPSTimeStamp` when available
+
+    Filesystem timestamps (mtime/atime) are NOT set here; they are applied centrally
+    in `_apply_metadata_to_path(...)` and are forced to UTC.
+
     Args:
         image_path: Path to the image file to modify
-        memory: Memory object containing date, latitude, and longitude data
-    
-    Updates the image file in-place with embedded EXIF data and sets filesystem
-    timestamp to match the memory's capture date.
-    
-    Gracefully handles missing EXIF data by creating new EXIF structure if needed.
-    Errors during EXIF embedding are logged but don't stop the download process.
+        memory: Memory containing date (tz-aware), and optional latitude/longitude
+
+    Gracefully handles missing EXIF by creating a new structure when needed. Errors during
+    EXIF embedding are logged but do not stop the download process.
     """
     try:
         # Load existing EXIF if any
@@ -54,9 +55,10 @@ def add_exif_data(image_path: Path, memory: Memory):
         except Exception:
             exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-        # Date/time in UTC (EXIF standard for accurate timestamps)
-        dt_utc = memory.date.astimezone(timezone.utc) if memory.date.tzinfo else memory.date.replace(tzinfo=timezone.utc)
-        dt_str = dt_utc.strftime("%Y:%m:%d %H:%M:%S")
+        # Date/time in local timezone (memory.date is already timezone-aware)
+        # EXIF classic DateTime fields don't store timezone info, so we use local time
+        dt_local = memory.date
+        dt_str = dt_local.strftime("%Y:%m:%d %H:%M:%S")
         # DateTime: File modification time (general timestamp field)
         exif_dict["0th"][piexif.ImageIFD.DateTime] = dt_str
         # DateTimeOriginal: When photo was taken (original capture time)
@@ -64,9 +66,27 @@ def add_exif_data(image_path: Path, memory: Memory):
         # DateTimeDigitized: When photo was digitized (same as original for digital photos)
         exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = dt_str
         
+        # Add EXIF 2.31 timezone offset fields if available
+        try:
+            offset_total_minutes = dt_local.utcoffset().total_seconds() / 60 if dt_local.utcoffset() else None
+        except Exception:
+            offset_total_minutes = None
+        if offset_total_minutes is not None:
+            sign = '+' if offset_total_minutes >= 0 else '-'
+            abs_min = int(abs(offset_total_minutes))
+            offset_str = f"{sign}{abs_min // 60:02d}:{abs_min % 60:02d}"
+            # OffsetTime (for DateTime), OffsetTimeOriginal, OffsetTimeDigitized
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTime] = offset_str
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = offset_str
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeDigitized] = offset_str
+
+        # Set GPSDateStamp/GPSTimeStamp in UTC when GPS available later
+
         # Add application source (Snapchat) - must be bytes
         # Software: Identifies the app that created/processed the image
         exif_dict["0th"][piexif.ImageIFD.Software] = b"Snapchat"
+        # Make: Camera device manufacturer/app
+        exif_dict["0th"][piexif.ImageIFD.Make] = b"Snapchat"
 
         # GPS if available
         if memory.latitude is not None and memory.longitude is not None:
@@ -86,13 +106,19 @@ def add_exif_data(image_path: Path, memory: Memory):
             # GPSVersionID: GPS IFD version (2.3.0.0)
             exif_dict["GPS"][piexif.GPSIFD.GPSVersionID] = (2, 3, 0, 0)
 
+            # GPSDateStamp and GPSTimeStamp: always UTC per EXIF spec
+            dt_utc = dt_local.astimezone(timezone.utc)
+            exif_dict["GPS"][piexif.GPSIFD.GPSDateStamp] = dt_utc.strftime("%Y:%m:%d")
+            # GPSTimeStamp is array of rationals: [hour, minute, second]
+            h, m, s = dt_utc.hour, dt_utc.minute, dt_utc.second
+            exif_dict["GPS"][piexif.GPSIFD.GPSTimeStamp] = [
+                (h, 1), (m, 1), (s, 1)
+            ]
+
         # Dump and insert
         exif_bytes = piexif.dump(exif_dict)
         piexif.insert(exif_bytes, str(image_path))
 
-        # Update filesystem timestamp
-        ts = memory.date.timestamp()
-        os.utime(image_path, (ts, ts))
 
     except Exception as e:
         print(f"Failed to set EXIF data for {image_path.name}: {e}")
@@ -100,18 +126,30 @@ def add_exif_data(image_path: Path, memory: Memory):
 
 def set_video_metadata(video_path: Path, memory: Memory):
     """
-    Sets video creation time and Apple Photos-compatible GPS metadata.
-    Uses ffmpeg via subprocess to inject metadata without re-encoding.
+    Set video metadata using ffmpeg without re-encoding.
+
+    - Timestamps: Written in UTC using ISO 8601 `YYYY-MM-DDTHH:MM:SSZ` for
+        `creation_time` and a generic `date` tag to maximize cross-platform compatibility.
+    - Software/Make: Identify "Snapchat" as source using common tags (©too/software/Make).
+    - Location: When available, writes Apple Photos-compatible `location` and `location-eng`
+        in ISO 6709 format (±lat±lon+alt/).
+
+    Filesystem timestamps (mtime/atime) are NOT set here; they are applied centrally
+    in `_apply_metadata_to_path(...)` and are forced to UTC.
     """
     try:
-        # Prepare UTC creation time in ISO 8601
+        # Prepare creation time in UTC (force timezone-aware -> UTC)
+        # Use ISO 8601 with explicit UTC designator 'Z'
         dt_utc = memory.date.astimezone(timezone.utc)
-        iso_time = dt_utc.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        iso_time = dt_utc.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
         # Base metadata arguments with application source using ©too tag (QuickTime software tag)
         metadata_args = [
             "-metadata", f"creation_time={iso_time}",
+            "-metadata", f"date={iso_time}",  # Generic date in UTC for cross-platform compatibility
             "-metadata", "©too=Snapchat",  # QuickTime software tag - standardized for app identification
+            "-metadata", "software=Snapchat",  # Generic software tag for non-Apple players
+            "-metadata", "Make=Snapchat",  # Camera device/source
         ]
 
         # Add location if available
@@ -149,8 +187,6 @@ def set_video_metadata(video_path: Path, memory: Memory):
         # Replace original file
         temp_path.replace(video_path)
 
-        # Update filesystem timestamp
-        os.utime(video_path, (memory.date.timestamp(), memory.date.timestamp()))
 
     except Exception as e:
         print(f"Failed to set video metadata for {video_path.name}: {e}")
@@ -161,8 +197,7 @@ def _apply_metadata_to_path(file_path: Path, memory: Memory, timestamp: float) -
     if not file_path.exists():
         return
     
-    os.utime(file_path, (timestamp, timestamp))
-    
+
     if not config.add_exif:
         return
     
@@ -172,9 +207,15 @@ def _apply_metadata_to_path(file_path: Path, memory: Memory, timestamp: float) -
         set_video_metadata(file_path, memory)
 
 
+    # Ensure filesystem timestamp is UTC
+    ts_utc = memory.date.astimezone(timezone.utc).timestamp()
+    os.utime(file_path, (ts_utc, ts_utc))
+    
+
 def apply_metadata_and_timestamps(memory: Memory, add_exif: bool) -> None:
     """Apply metadata and timestamps to downloaded media files."""
-    timestamp = memory.date.timestamp()
+    # Use UTC timestamp for filesystem mtime/atime
+    timestamp = memory.date.astimezone(timezone.utc).timestamp()
     
     # Apply to path_with_overlay if set
     if memory.path_with_overlay is not None:

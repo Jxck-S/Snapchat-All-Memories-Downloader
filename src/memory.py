@@ -8,9 +8,15 @@ from typing import Optional
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
+from timezonefinder import TimezoneFinder
+import pytz
 
 from . import config
 from .config import OverlayMode, OverlayNaming
+
+# Module-level singleton for TimezoneFinder (initialized once for performance)
+# TimezoneFinder loads timezone boundary data which is slow, so we reuse one instance
+_timezone_finder_instance = TimezoneFinder()
 
 
 class MediaType(str, Enum):
@@ -35,6 +41,7 @@ class Memory(BaseModel):
     location: str = Field(default="", alias="Location")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    location_available: bool = Field(default=False, exclude=True)  # True if lat/lon are valid coordinates
     path_with_overlay: Optional[Path] = None
     path_without_overlay: Optional[Path] = None
 
@@ -63,6 +70,19 @@ class Memory(BaseModel):
             if match := re.search(r"([-\d.]+),\s*([-\d.]+)", self.location):
                 self.latitude = float(match.group(1))
                 self.longitude = float(match.group(2))
+        
+        # Check if location data is valid (not 0.0, 0.0 null values)
+        if self.latitude == 0.0 and self.longitude == 0.0:
+            # Null/placeholder coordinates - clear them
+            self.latitude = None
+            self.longitude = None
+            self.location_available = False
+        else:
+            # Valid coordinates available
+            self.location_available = self.latitude is not None and self.longitude is not None
+        
+        # Apply timezone awareness based on location
+        self.apply_timezone_to_date()
 
     def get_filename(self, has_overlay: bool = False) -> str:
         """Get filename with optional '_overlayed' suffix for overlaid versions."""
@@ -85,6 +105,37 @@ class Memory(BaseModel):
             )
             response.raise_for_status()
             return response.text.strip()
+
+    def apply_timezone_to_date(self) -> None:
+        """Apply timezone awareness to the date based on GPS location.
+        
+        Converts the UTC datetime to the local timezone of the memory location,
+        accounting for DST on the capture date. This makes the datetime aware of
+        the actual timezone where the memory was captured.
+        
+        Modifies self.date in-place to be timezone-aware in the local timezone.
+        """
+        # Skip if location data is not available
+        if not self.location_available:
+            return
+        
+        try:
+            tz_name = _timezone_finder_instance.timezone_at(lat=self.latitude, lng=self.longitude)
+            
+            if not tz_name:
+                return
+            
+            # Get timezone object
+            tz = pytz.timezone(tz_name)
+            
+            # Convert UTC datetime to local timezone (with DST applied automatically)
+            local_dt = self.date.astimezone(tz)
+            
+            # Update the date field to be in the local timezone
+            self.date = local_dt
+        
+        except Exception as e:
+            print(f"Failed to apply timezone for ({self.latitude}, {self.longitude}): {e}")
 
     def fix_paths_on_merge_failure(self, overlay_mode: OverlayMode) -> None:
         """Fix memory file paths when overlay merge fails.
