@@ -56,6 +56,17 @@ def parse_args():
     parser.add_argument(
         "--prefix", default="", help="Prefix to add to all downloaded filenames (e.g., 'SC_' creates 'SC_filename.ext')"
     )
+    parser.add_argument(
+        "--ocr-metadata",
+        action="store_true",
+        help="Run OCR on overlays and embed extracted text into metadata (disabled by default)",
+    )
+    parser.add_argument(
+        "--ocr-engine",
+        choices=["easyocr", "paddle"],
+        default="easyocr",
+        help="OCR engine to use when --ocr-metadata is enabled (default: easyocr)",
+    )
     return parser.parse_args()
 
 
@@ -72,5 +83,7 @@ def setup_config():
     config.add_exif = not args.no_exif
     config.skip_existing = not args.no_skip_existing
     config.filename_prefix = args.prefix
+    config.ocr_metadata = args.ocr_metadata
+    config.ocr_engine = args.ocr_engine
 
     return Path(args.json_file)

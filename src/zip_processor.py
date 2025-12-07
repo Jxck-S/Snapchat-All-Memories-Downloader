@@ -1,8 +1,14 @@
-"""ZIP file processing and overlay merging."""
+"""ZIP file processing, overlay merging, and overlay OCR."""
 
 import io
 import zipfile
 from pathlib import Path
+from typing import Optional
+
+from PIL import Image, ImageOps
+import numpy as np
+from typing import List
+from .ocr import extract_overlay_text_easy, extract_overlay_text_paddle
 
 from . import config
 from .config import OverlayMode, OverlayNaming
@@ -31,6 +37,17 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
 
             main_data = zf.read(main_file)
             overlay_data = zf.read(overlay_file) if overlay_file else None
+
+            # If overlay exists and OCR is enabled, extract caption text (WebP/PNG)
+            if overlay_data and config.ocr_metadata:
+                if config.ocr_engine == "paddle":
+                    memory.overlay_text = extract_overlay_text_paddle(overlay_data)
+                else:
+                    memory.overlay_text = extract_overlay_text_easy(overlay_data)
+                if memory.overlay_text:
+                    print(f"OCR extracted for {memory.get_filename(has_overlay=True)}: {memory.overlay_text[:60]}...")
+                else:
+                    print(f"OCR found no text for {memory.get_filename(has_overlay=True)}")
 
             if config.overlay_mode == OverlayMode.BOTH:
                 if config.overlay_naming == OverlayNaming.SINGLE_FOLDER:
@@ -106,3 +123,6 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
             error_zip_path = error_dir.parent / f"{memory.get_filename().rsplit('.', 1)[0]}.zip"
             error_zip_path.write_bytes(zip_content)
             print(f"  Saved ZIP ({len(zip_content)} bytes) to: {error_zip_path.relative_to(config.output_dir)}")
+
+
+# OCR helper functions moved to src/ocr.py

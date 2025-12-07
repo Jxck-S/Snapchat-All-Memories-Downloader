@@ -8,6 +8,7 @@ from typing import Optional
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
+from pydantic import ConfigDict
 from timezonefinder import TimezoneFinder
 import pytz
 
@@ -33,6 +34,10 @@ class MediaType(str, Enum):
 
 
 class Memory(BaseModel):
+    # Ensure all datetimes serialize back to Snapchat JSON string format
+    model_config = ConfigDict(json_encoders={
+        datetime: lambda dt: dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
     """Model for a single memory from Snapchat export."""
     date: datetime = Field(alias="Date")
     media_type: MediaType = Field(alias="Media Type")
@@ -44,6 +49,10 @@ class Memory(BaseModel):
     location_available: bool = Field(default=False, exclude=True)  # True if lat/lon are valid coordinates
     path_with_overlay: Optional[Path] = None
     path_without_overlay: Optional[Path] = None
+    overlay_text: Optional[str] = Field(default=None, alias="extracted_ocr_text", description="OCR-extracted text from overlay layer")
+
+    # Per-field serializer is unnecessary because model_config.json_encoders
+    # already formats all datetime values uniformly.
 
     @field_validator("date", mode="before")
     @classmethod

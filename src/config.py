@@ -37,3 +37,7 @@ filename_prefix: str = ""
 max_concurrent: int = 40
 add_exif: bool = True
 skip_existing: bool = True
+
+# OCR settings
+ocr_metadata: bool = False
+ocr_engine: str = "easyocr"  # "easyocr" or "paddle"
