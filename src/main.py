@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+import os
 
 from . import config
 from . import args as args_module
@@ -11,13 +12,50 @@ from .download import download_all
 
 
 
-def load_memories(json_path: Path) -> list[Memory]:
+def load_memories(json_path: Path) -> tuple[dict, list[Memory]]:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     
-    memories = [Memory(**item) for item in data["Saved Media"]]
+    raw_memories = data.get("Saved Media", [])
+    
+    # Track occurrence count for each timestamp to handle duplicates
+    timestamp_count = {}
+    
+    memories = []
+    for item in raw_memories:
+        memory = Memory(**item)
+        # Count occurrences of this timestamp
+        timestamp = str(memory.date)
+        timestamp_count[timestamp] = timestamp_count.get(timestamp, 0) + 1
+        memory.occurrence = timestamp_count[timestamp]
+        memories.append(memory)
+    
     print(f"Found {len(memories)} memories in {json_path.name}")
-    return memories
+    return data, memories
+
+
+def _atomic_write_json(out_path: Path, data: dict):
+    """Atomically write JSON to file to avoid corruption."""
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, out_path)
+
+
+def save_processed_memories(json_path: Path, original_data: dict, memories: list[Memory]) -> Path:
+    """Save processed memories to a new output file with '_processed' suffix."""
+    # Create output filename: memories_history.json -> memories_history_processed.json
+    out_path = json_path.parent / (json_path.stem + "_processed.json")
+    
+    # Ensure Pydantic applies json encoders (e.g., datetime -> UTC string)
+    items = [m.model_dump(by_alias=True, mode="json") for m in memories]
+    out_data = dict(original_data)
+    out_data["Saved Media"] = items
+    _atomic_write_json(out_path, out_data)
+    print(f"Saved processed memories: {out_path.name}")
+    return out_path
 
 
 async def main():
@@ -29,8 +67,10 @@ async def main():
     if not check_ffmpeg(config.ffmpeg_path, config.overlay_mode):
         return
 
-    memories = load_memories(json_path)
+    original_data, memories = load_memories(json_path)
     await download_all(memories)
+    # Save processed memories (includes OCR if enabled, plus any other processing)
+    save_processed_memories(json_path, original_data, memories)
 
 
 

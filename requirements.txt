@@ -5,3 +5,5 @@ pydantic>=2.12.3
 tqdm>=4.67.1
 timezonefinder
 pytz
+easyocr
+numpy

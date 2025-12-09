@@ -41,7 +41,7 @@ def _filter_memories_to_download(memories: list[Memory], stats: Stats) -> list[M
     
     print("Scanning for existing files...")
     for i, memory in enumerate(tqdm(memories, desc="Scanning", unit="file"), 1):
-        if file_exists_in_tree(config.output_dir, memory.get_filename()):
+        if file_exists_in_tree(config.output_dir, memory.get_filename(occurrence=memory.occurrence)):
             stats.skipped += 1
         else:
             to_download.append(memory)
@@ -99,9 +99,9 @@ async def download_memory(
                 if config.overlay_mode == OverlayMode.NONE or not response.headers.get("Content-Type", "").lower().startswith("application/zip"):
                     # Calculate filename based on path
                     if config.overlay_mode == OverlayMode.BOTH and config.overlay_naming == OverlayNaming.SEPARATE_FOLDERS:
-                        output_path = config.output_dir / config.WITHOUT_OVERLAYS_DIR / memory.get_filename()
+                        output_path = config.output_dir / config.WITHOUT_OVERLAYS_DIR / memory.get_filename(occurrence=memory.occurrence)
                     else:
-                        output_path = config.output_dir / memory.get_filename()        
+                        output_path = config.output_dir / memory.get_filename(occurrence=memory.occurrence)        
                     output_path.write_bytes(content)
                     memory.path_without_overlay = output_path
                     
@@ -124,7 +124,7 @@ async def download_memory(
                 return True, bytes_downloaded
 
         except Exception as e:
-            print(f"\nError downloading {memory.get_filename()}: {e}")
+            print(f"\nError downloading {memory.get_filename(occurrence=memory.occurrence)}: {e}")
             return False, 0
 
 

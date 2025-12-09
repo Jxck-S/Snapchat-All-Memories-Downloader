@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import ConfigDict
 from timezonefinder import TimezoneFinder
 import pytz
 
@@ -33,17 +34,52 @@ class MediaType(str, Enum):
 
 
 class Memory(BaseModel):
+    # Ensure all datetimes serialize back to Snapchat JSON string format
+    model_config = ConfigDict(json_encoders={
+        datetime: lambda dt: dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
     """Model for a single memory from Snapchat export."""
-    date: datetime = Field(alias="Date")
-    media_type: MediaType = Field(alias="Media Type")
-    media_download_url: str = Field(alias="Media Download Url")  # Direct AWS CDN URL - has overlays (ZIP), rate limited
-    download_link: str = Field(default="", alias="Download Link")  # Snapchat endpoint - requires POST returns AWS URL, no overlays, no rate limit
+    date: datetime = Field(serialization_alias="date")
+    media_type: MediaType = Field(serialization_alias="media_type")
+    media_download_url: str = Field(serialization_alias="media_download_url")  # Direct AWS CDN URL - has overlays (ZIP), rate limited
+    download_link: str = Field(default="", serialization_alias="download_link")  # Snapchat endpoint - requires POST returns AWS URL, no overlays, no rate limit
     location: str = Field(default="", alias="Location")
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    latitude: Optional[float] = Field(default=None)
+    longitude: Optional[float] = Field(default=None)
     location_available: bool = Field(default=False, exclude=True)  # True if lat/lon are valid coordinates
-    path_with_overlay: Optional[Path] = None
-    path_without_overlay: Optional[Path] = None
+    path_with_overlay: Optional[Path] = Field(default=None, exclude=True)
+    path_without_overlay: Optional[Path] = Field(default=None, exclude=True)
+    extracted_ocr_text: Optional[str] = Field(default=None, alias="extracted_ocr_text")
+    manual_location: bool = Field(default=False)
+    occurrence: int = Field(default=1, exclude=True)  # Which occurrence of this timestamp (1-based, for handling duplicates)
+
+    # Per-field serializer is unnecessary because model_config.json_encoders
+    # already formats all datetime values uniformly.
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_field_names(cls, data):
+        """Support  (spaces) or (underscores)."""
+        if not isinstance(data, dict):
+            return data
+        
+        # Map old field names to new ones if they exist
+        field_mappings = {
+            "Date": "date",
+            "Media Type": "media_type",
+            "Media Download Url": "media_download_url",
+            "Download Link": "download_link",
+        }
+        
+        # Copy data to avoid modifying original
+        normalized = dict(data)
+        
+        # If new format field doesn't exist, try old format name
+        for old_name, new_name in field_mappings.items():
+            if new_name not in normalized and old_name in normalized:
+                normalized[new_name] = normalized.pop(old_name)
+        
+        return normalized
 
     @field_validator("date", mode="before")
     @classmethod
@@ -72,25 +108,52 @@ class Memory(BaseModel):
                 self.longitude = float(match.group(2))
         
         # Check if location data is valid (not 0.0, 0.0 null values)
-        if self.latitude == 0.0 and self.longitude == 0.0:
-            # Null/placeholder coordinates - clear them
-            self.latitude = None
-            self.longitude = None
-            self.location_available = False
-        else:
+        if self.latitude is not None and self.longitude is not None:
             # Valid coordinates available
-            self.location_available = self.latitude is not None and self.longitude is not None
+            self.location_available = True
+        else:
+            self.location_available = False
         
         # Apply timezone awareness based on location
         self.apply_timezone_to_date()
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude Location field when latitude/longitude are present."""
+        data = super().model_dump(**kwargs)
+        
+        # If we have latitude/longitude, don't export the Location string field
+        if self.latitude is not None and self.longitude is not None:
+            data.pop("Location", None)
+        
+        return data
 
-    def get_filename(self, has_overlay: bool = False) -> str:
-        """Get filename with optional '_overlayed' suffix for overlaid versions."""
+    def get_filename(self, has_overlay: bool = False, occurrence: int = 1) -> str:
+        """Get filename with optional '_overlayed' suffix for overlaid versions.
+        
+        Args:
+            has_overlay: Whether this is an overlayed version
+            occurrence: Which occurrence of this timestamp (1-based). 
+                       For occurrence > 1, appends _v{occurrence} suffix to handle duplicates.
+        """
         ext = ".jpg" if self.media_type == MediaType.IMAGE else ".mp4"
         base_name = self.date.strftime('%Y-%m-%d_%H-%M-%S')
+        # Add version suffix for duplicates (timestamps with multiple entries)
+        version_suffix = f"_v{occurrence}" if occurrence > 1 else ""
         overlay_suffix = "_overlayed" if has_overlay else ""
         prefix = f"{config.filename_prefix}_" if config.filename_prefix else ""
-        return f"{prefix}{base_name}{overlay_suffix}{ext}"
+        return f"{prefix}{base_name}{version_suffix}{overlay_suffix}{ext}"
+
+    def get_overlay_filename(self, occurrence: int = 1) -> str:
+        """Get filename for the overlay file (WebP format).
+        
+        Args:
+            occurrence: Which occurrence of this timestamp (1-based). 
+                       For occurrence > 1, appends _v{occurrence} suffix to handle duplicates.
+        """
+        base_name = self.date.strftime('%Y-%m-%d_%H-%M-%S')
+        version_suffix = f"_v{occurrence}" if occurrence > 1 else ""
+        prefix = f"{config.filename_prefix}_" if config.filename_prefix else ""
+        return f"{prefix}{base_name}{version_suffix}_overlay.webp"
 
     def get_media_download_url(self) -> str:
         """Get direct AWS CDN URL for media with overlays (ZIP format)."""

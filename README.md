@@ -28,9 +28,10 @@ This script will download all your Snapchat memories in bulk, **including the ti
 
 ### Optional Arguments
 ```
-usage: main.py [-h] [-o OUTPUT] [-c CONCURRENT] [--no-exif] [--no-skip-existing] 
-               [--overlay {none,with,both}] [--overlay-naming {separate-folders,single-folder}]
-               [--ffmpeg-path FFMPEG_PATH] [--prefix PREFIX] [json_file]
+usage: main.py [-h] [-o OUTPUT] [--concurrent CONCURRENT] [--no-exif] [--no-skip-existing] 
+               [--overlay {none,with,both}] [--overlay-naming {single-folder,separate-folders}]
+               [--ffmpeg-path FFMPEG_PATH] [--prefix PREFIX] [--ocr-metadata] [--copy-overlays]
+               [json_file]
 
 Download Snapchat memories from data export
 
@@ -40,7 +41,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -o, --output OUTPUT   Output directory (default: ./downloads)
-  -c, --concurrent CONCURRENT
+  --concurrent CONCURRENT
                         Max concurrent downloads (default: 40)
   --no-exif             Disable metadata writing (removes Snapchat EXIF tags and geolocation)
   --no-skip-existing    Re-download existing files
@@ -49,7 +50,7 @@ options:
                           - none: Skip overlays entirely (fast, default)
                           - with: Download only files with overlays
                           - both: Download both overlayed and non-overlayed versions (organization controlled by --overlay-naming)
-  --overlay-naming {separate-folders,single-folder}
+  --overlay-naming {single-folder,separate-folders}
                         When using --overlay both:
                           - separate-folders: Split into 'with_overlays' and 'without_overlays' folders (default)
                           - single-folder: Keep all in one folder, overlayed files get '_overlayed' suffix
@@ -57,6 +58,11 @@ options:
                         Path to ffmpeg executable (default: ffmpeg in system PATH)
                         Required only when using --overlay with or --overlay both for video overlay merging
   --prefix PREFIX       Prefix to add to all downloaded filenames (e.g., 'SC_' creates 'SC_filename.ext')
+  --ocr-metadata        Run OCR on overlay text and embed extracted text into JSON metadata
+                        Requires: --overlay with or --overlay both
+                        Creates output file: memories_history_ocr.json
+  --copy-overlays       Save a copy of overlay files to 'overlays' subfolder
+                        Requires: --overlay both
 ```
 
 ## Requires ffmpeg
@@ -92,6 +98,27 @@ python main.py --overlay both
 # Download both versions in a single folder with '_overlayed' suffix for overlaid files
 python main.py --overlay both --overlay-naming single-folder
 ```
+
+## OCR (Optical Character Recognition)
+Extract text from overlay stickers and filters and embed it into your memories metadata.
+
+### Requirements
+- ffmpeg installed
+- `--overlay with` or `--overlay both` enabled
+- `--ocr-metadata` flag
+
+### Limitations
+Works best on basic captions and location filters. Limited support for large/artistic fonts, blended text, and complex overlays.
+
+### Examples
+
+```bash
+# Basic usage
+python main.py memories_history.json --overlay both --ocr-metadata
+
+
+```
+
 
 
 ## Troubleshooting
