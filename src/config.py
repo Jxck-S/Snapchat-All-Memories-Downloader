@@ -40,4 +40,7 @@ skip_existing: bool = True
 
 # OCR settings
 ocr_metadata: bool = False
-ocr_engine: str = "easyocr"  # "easyocr" or "paddle"
+
+# Overlay extraction settings
+save_overlays_only: bool = False
+overlays_dir: str = "overlays"

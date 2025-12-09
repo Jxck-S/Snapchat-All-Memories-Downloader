@@ -62,10 +62,9 @@ def parse_args():
         help="Run OCR on overlays and embed extracted text into metadata (disabled by default)",
     )
     parser.add_argument(
-        "--ocr-engine",
-        choices=["easyocr", "paddle"],
-        default="easyocr",
-        help="OCR engine to use when --ocr-metadata is enabled (default: easyocr)",
+        "--copy-overlays",
+        action="store_true",
+        help="Save a copy of overlay files to 'overlays' subfolder (requires --overlay=both)",
     )
     return parser.parse_args()
 
@@ -73,6 +72,18 @@ def parse_args():
 def setup_config():
     """Parse arguments and apply them to config module."""
     args = parse_args()
+
+    # Validate: OCR only works when overlays are being processed
+    if args.ocr_metadata and args.overlay == "none":
+        print("Error: --ocr-metadata requires overlays to be enabled.")
+        print("Use --overlay with or both instead of none.")
+        exit(1)
+
+    # Validate: copy-overlays only works in 'both' mode
+    if args.copy_overlays and args.overlay != "both":
+        print("Error: --copy-overlays requires --overlay=both mode.")
+        print("Use --overlay=both to enable saving both versions.")
+        exit(1)
 
     # Apply all args to config
     config.ffmpeg_path = args.ffmpeg_path
@@ -84,6 +95,6 @@ def setup_config():
     config.skip_existing = not args.no_skip_existing
     config.filename_prefix = args.prefix
     config.ocr_metadata = args.ocr_metadata
-    config.ocr_engine = args.ocr_engine
+    config.save_overlays_only = args.copy_overlays
 
     return Path(args.json_file)

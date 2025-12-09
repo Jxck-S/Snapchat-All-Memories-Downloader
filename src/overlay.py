@@ -21,7 +21,7 @@ def merge_image_overlay(output_path: Path, main_data: bytes, overlay_data: bytes
                         main_img.alpha_composite(overlay_resized)
                 except Exception as e:
                     if memory:
-                        print(f"Failed to load overlay for {memory.get_filename()}: {e}")
+                        print(f"Failed to load overlay for {memory.get_filename(occurrence=memory.occurrence)}: {e}")
                     else:
                         print(f"Failed to load overlay image: {e}")
                     memory.fix_paths_on_merge_failure(config.overlay_mode)
@@ -32,7 +32,7 @@ def merge_image_overlay(output_path: Path, main_data: bytes, overlay_data: bytes
             merged_img.save(output_path, "JPEG", quality=95, optimize=False)
     except Exception as e:
         if memory:
-            print(f"Failed to process image {memory.get_filename()}: {e}")
+            print(f"Failed to process image {memory.get_filename(occurrence=memory.occurrence)}: {e}")
         else:
             print(f"Failed to process image: {e}")
         raise
@@ -85,7 +85,7 @@ async def merge_video_overlay(
                     output_path.write_bytes(merged_path.read_bytes())
                 else:
                     # Second attempt: try PIL re-encode fallback
-                    print(f"ffmpeg merge failed for {memory.get_filename(True)}, attempting PIL re-encode fix...")
+                    print(f"ffmpeg merge failed for {memory.get_filename(has_overlay=True, occurrence=memory.occurrence)}, attempting PIL re-encode fix...")
                     try:
                         img = Image.open(io.BytesIO(overlay_data))
                         # Re-save to clean up corruption
@@ -104,13 +104,13 @@ async def merge_video_overlay(
                         raise
             except Exception:
                 error_msg = "ffmpeg overlay merge failed"
-                print(f"{error_msg} for {memory.get_filename(True)}")
+                print(f"{error_msg} for {memory.get_filename(has_overlay=True, occurrence=memory.occurrence)}")
                 memory.fix_paths_on_merge_failure(config.overlay_mode)
                 memory.path_without_overlay.write_bytes(main_data)
                 print(f"Saved version without overlay: {memory.path_without_overlay}")
                 raise RuntimeError(error_msg)
             except FileNotFoundError as e:
-                print(f"Not found for {memory.get_filename(True)}.")
+                print(f"Not found for {memory.get_filename(has_overlay=True, occurrence=memory.occurrence)}.")
                 raise
         else:
             output_path.write_bytes(main_data)

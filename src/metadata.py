@@ -90,11 +90,12 @@ def add_exif_data(image_path: Path, memory: Memory):
         exif_dict["0th"][piexif.ImageIFD.Make] = b"Snapchat"
 
         # If we have overlay OCR text, store it in a simple EXIF description field
-        if getattr(memory, "overlay_text", None):
-            overlay_text = memory.overlay_text.strip()
+        if getattr(memory, "extracted_ocr_text", None):
+            overlay_text = memory.extracted_ocr_text.strip()
             if overlay_text:
                 # ImageDescription (general caption) — simplest, widely supported
-                exif_dict["0th"][piexif.ImageIFD.ImageDescription] = overlay_text
+                # Must be bytes in piexif
+                exif_dict["0th"][piexif.ImageIFD.ImageDescription] = overlay_text.encode('utf-8')
 
         # GPS if available
         if memory.latitude is not None and memory.longitude is not None:
@@ -198,8 +199,8 @@ def set_video_metadata(video_path: Path, memory: Memory):
         temp_path.replace(video_path)
 
         # If overlay text is present and exiftool is available, also embed XMP dc:description
-        if getattr(memory, "overlay_text", None):
-            overlay_text = memory.overlay_text.strip()
+        if getattr(memory, "extracted_ocr_text", None):
+            overlay_text = memory.extracted_ocr_text.strip()
             if overlay_text and shutil.which("exiftool"):
                 try:
                     subprocess.run([
