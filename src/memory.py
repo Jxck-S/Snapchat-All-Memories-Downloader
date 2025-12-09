@@ -13,7 +13,7 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from . import config
-from .config import OverlayMode, OverlayNaming
+from .config import OverlayMode
 
 # Module-level singleton for TimezoneFinder (initialized once for performance)
 # TimezoneFinder loads timezone boundary data which is slow, so we reuse one instance

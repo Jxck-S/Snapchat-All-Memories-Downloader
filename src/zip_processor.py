@@ -3,11 +3,7 @@
 import io
 import zipfile
 from pathlib import Path
-from typing import Optional
 
-from PIL import Image, ImageOps
-import numpy as np
-from typing import List
 from .ocr import extract_overlay_text_easy
 
 from . import config
@@ -95,7 +91,7 @@ async def process_zip_with_overlays(output_path: Path, zip_content: bytes, memor
     except Exception as e:
         stats.overlay_failed += 1
         print(f"Error processing ZIP for {memory.get_filename(occurrence=memory.occurrence)}: {e}")
-        print(f"Saving extracted files to error folder for manual inspection.")
+        print("Saving extracted files to error folder for manual inspection.")
         
         # Extract and save files to error subfolder
         error_dir = config.output_dir / "error_zips" / memory.get_filename(occurrence=memory.occurrence).rsplit('.', 1)[0]

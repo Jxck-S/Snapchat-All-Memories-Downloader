@@ -63,7 +63,7 @@ async def _process_and_update(
     progress_bar,
 ) -> None:
     """Download a single memory and update progress."""
-    success, bytes_downloaded = await download_memory(memory, config.add_exif, semaphore, stats)
+    success, bytes_downloaded = await download_memory(memory, semaphore, stats)
     if success:
         stats.downloaded += 1
     else:
@@ -77,7 +77,7 @@ async def _process_and_update(
 
 
 async def download_memory(
-    memory: Memory, add_exif: bool, semaphore: asyncio.Semaphore, stats: Stats
+    memory: Memory, semaphore: asyncio.Semaphore, stats: Stats
 ) -> tuple[bool, int]:
     async with semaphore:
         try:
@@ -118,7 +118,7 @@ async def download_memory(
 
                 bytes_downloaded = len(content)
                 # Apply metadata and timestamps
-                apply_metadata_and_timestamps(memory, add_exif)
+                apply_metadata_and_timestamps(memory)
 
                 # Always return success + byte count
                 return True, bytes_downloaded

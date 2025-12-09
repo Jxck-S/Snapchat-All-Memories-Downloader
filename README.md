@@ -28,7 +28,7 @@ This script will download all your Snapchat memories in bulk, **including the ti
 
 ### Optional Arguments
 ```
-usage: main.py [-h] [-o OUTPUT] [--concurrent CONCURRENT] [--no-exif] [--no-skip-existing] 
+usage: main.py [-h] [-o OUTPUT] [-c CONCURRENT] [--no-exif] [--no-skip-existing] 
                [--overlay {none,with,both}] [--overlay-naming {single-folder,separate-folders}]
                [--ffmpeg-path FFMPEG_PATH] [--prefix PREFIX] [--ocr-metadata] [--copy-overlays]
                [json_file]
@@ -41,9 +41,9 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -o, --output OUTPUT   Output directory (default: ./downloads)
-  --concurrent CONCURRENT
+  -c, --concurrent CONCURRENT
                         Max concurrent downloads (default: 40)
-  --no-exif             Disable metadata writing (removes Snapchat EXIF tags and geolocation)
+  --no-exif             Disable metadata writing (no location, time or other metadata)
   --no-skip-existing    Re-download existing files
   --overlay {none,with,both}
                         Overlay handling mode:

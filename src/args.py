@@ -26,6 +26,7 @@ def parse_args():
         help="Path to ffmpeg executable (default: ffmpeg in PATH)",
     )
     parser.add_argument(
+        "-c",
         "--concurrent",
         type=int,
         default=40,
@@ -46,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--no-exif",
         action="store_true",
-        help="Do not add EXIF metadata to images (faster, but loses location/timestamp info in image files)",
+        help="Do not add metadata (faster, but loses location/timestamp info in files)",
     )
     parser.add_argument(
         "--no-skip-existing",

@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 from . import config
-from .memory import Memory, MediaType
+from .memory import Memory
 
 
 def merge_image_overlay(output_path: Path, main_data: bytes, overlay_data: bytes | None, memory: Memory | None = None) -> None:
@@ -58,7 +58,7 @@ async def _try_ffmpeg_merge(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    _, _ = await process.communicate()
     return process.returncode == 0
 
 
@@ -109,8 +109,5 @@ async def merge_video_overlay(
                 memory.path_without_overlay.write_bytes(main_data)
                 print(f"Saved version without overlay: {memory.path_without_overlay}")
                 raise RuntimeError(error_msg)
-            except FileNotFoundError as e:
-                print(f"Not found for {memory.get_filename(has_overlay=True, occurrence=memory.occurrence)}.")
-                raise
         else:
             output_path.write_bytes(main_data)

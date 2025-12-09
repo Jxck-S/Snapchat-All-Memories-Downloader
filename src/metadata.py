@@ -238,7 +238,7 @@ def _apply_metadata_to_path(file_path: Path, memory: Memory, timestamp: float) -
     os.utime(file_path, (ts_utc, ts_utc))
     
 
-def apply_metadata_and_timestamps(memory: Memory, add_exif: bool) -> None:
+def apply_metadata_and_timestamps(memory: Memory) -> None:
     """Apply metadata and timestamps to downloaded media files."""
     # Use UTC timestamp for filesystem mtime/atime
     timestamp = memory.date.astimezone(timezone.utc).timestamp()
