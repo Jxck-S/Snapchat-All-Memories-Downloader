@@ -15,17 +15,19 @@ from .metadata import apply_metadata_and_timestamps
 from .zip_processor import process_zip_with_overlays
 
 
-def file_exists_in_tree(output_dir: Path, filename: str) -> bool:
-    """Check if a file with the base name exists anywhere in output_dir tree."""
-    # Get base name without extension and overlay suffix
-    base_name = filename.rsplit(".", 1)[0].replace("_overlayed", "")
-    # Search for any file that starts with the base name
-    for file_path in output_dir.rglob("*"):
-        if file_path.is_file():
-            file_base = file_path.stem.replace("_overlayed", "")
-            if file_base == base_name:
-                return True
-    return False
+def _build_existing_files_set(output_dir: Path) -> set[str]:
+    """Build a set of existing file base names in the output directory tree.
+    
+    Scans the directory once and extracts base names (without extension and overlay suffix).
+    """
+    existing_files = set()
+    if output_dir.exists():
+        for file_path in output_dir.rglob("*"):
+            if file_path.is_file():
+                # Extract base name without extension and overlay suffix
+                file_base = file_path.stem.replace("_overlayed", "")
+                existing_files.add(file_base)
+    return existing_files
 
 
 def _filter_memories_to_download(memories: list[Memory], stats: Stats) -> list[Memory]:
@@ -40,8 +42,16 @@ def _filter_memories_to_download(memories: list[Memory], stats: Stats) -> list[M
         return memories
     
     print("Scanning for existing files...")
-    for i, memory in enumerate(tqdm(memories, desc="Scanning", unit="file"), 1):
-        if file_exists_in_tree(config.output_dir, memory.get_filename(occurrence=memory.occurrence)):
+    # Build set of existing files once (O(M) where M = number of existing files)
+    existing_files = _build_existing_files_set(config.output_dir)
+    
+    # Check each memory against the set (O(N) where N = number of memories)
+    for memory in tqdm(memories, desc="Scanning", unit="file"):
+        filename = memory.get_filename(occurrence=memory.occurrence)
+        # Get base name without extension and overlay suffix
+        base_name = filename.rsplit(".", 1)[0].replace("_overlayed", "")
+        
+        if base_name in existing_files:
             stats.skipped += 1
         else:
             to_download.append(memory)
