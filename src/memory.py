@@ -39,19 +39,19 @@ class Memory(BaseModel):
         datetime: lambda dt: dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     })
     """Model for a single memory from Snapchat export."""
-    date: datetime = Field(serialization_alias="date")
-    media_type: MediaType = Field(serialization_alias="media_type")
-    media_download_url: str = Field(serialization_alias="media_download_url")  # Direct AWS CDN URL - has overlays (ZIP), rate limited
-    download_link: str = Field(default="", serialization_alias="download_link")  # Snapchat endpoint - requires POST returns AWS URL, no overlays, no rate limit
-    location: str = Field(default="", alias="Location")
+    date: datetime = Field(validation_alias="Date")
+    media_type: MediaType = Field(validation_alias="Media Type")
+    media_download_url: str = Field(validation_alias="Media Download Url")  # Direct AWS CDN URL - has overlays (ZIP), rate limited
+    download_link: str = Field(default="", validation_alias="Download Link")  # Snapchat endpoint - requires POST returns AWS URL, no overlays, no rate limit
     latitude: Optional[float] = Field(default=None)
     longitude: Optional[float] = Field(default=None)
     location_available: bool = Field(default=False, exclude=True)  # True if lat/lon are valid coordinates
     path_with_overlay: Optional[Path] = Field(default=None, exclude=True)
     path_without_overlay: Optional[Path] = Field(default=None, exclude=True)
-    extracted_ocr_text: Optional[str] = Field(default=None, alias="extracted_ocr_text")
+    extracted_ocr_text: Optional[str] = Field(default=None)
     manual_location: bool = Field(default=False)
     occurrence: int = Field(default=1, exclude=True)  # Which occurrence of this timestamp (1-based, for handling duplicates)
+    timezone: Optional[str] = Field(default=None, exclude=False, description="IANA timezone name where the memory was captured (e.g., 'America/New_York')")
 
     # Per-field serializer is unnecessary because model_config.json_encoders
     # already formats all datetime values uniformly.
@@ -59,25 +59,34 @@ class Memory(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_field_names(cls, data):
-        """Support  (spaces) or (underscores)."""
+        """Accept either validation_alias or field name by auto-discovering aliases from field definitions.
+        
+        For any field with a validation_alias, if the field name doesn't exist in data,
+        copy from the alias. Also ensure the alias key exists when only the field name
+        is provided, so validation succeeds. Parse Location string into latitude/longitude.
+        """
         if not isinstance(data, dict):
             return data
         
-        # Map old field names to new ones if they exist
-        field_mappings = {
-            "Date": "date",
-            "Media Type": "media_type",
-            "Media Download Url": "media_download_url",
-            "Download Link": "download_link",
-        }
-        
-        # Copy data to avoid modifying original
         normalized = dict(data)
         
-        # If new format field doesn't exist, try old format name
-        for old_name, new_name in field_mappings.items():
-            if new_name not in normalized and old_name in normalized:
-                normalized[new_name] = normalized.pop(old_name)
+        # Dynamically build alias→field mapping from model fields
+        for field_name, field_info in cls.model_fields.items():
+            if field_info.validation_alias:
+                alias = field_info.validation_alias
+                # If field name not present but alias is, copy alias value to field name (do not remove alias)
+                if field_name not in normalized and alias in normalized:
+                    normalized[field_name] = normalized[alias]
+                # If alias key not present but field name is, copy field value to alias so validation finds it
+                if alias not in normalized and field_name in normalized:
+                    normalized[alias] = normalized[field_name]
+        
+        # Parse Location string into latitude/longitude if present
+        location_str = normalized.pop("Location", None) or normalized.pop("location", None)
+        if location_str and not normalized.get("latitude"):
+            if match := re.search(r"([-\d.]+),\s*([-\d.]+)", location_str):
+                normalized["latitude"] = float(match.group(1))
+                normalized["longitude"] = float(match.group(2))
         
         return normalized
 
@@ -102,14 +111,8 @@ class Memory(BaseModel):
         return v
 
     def model_post_init(self, __context):
-        if self.location and not self.latitude:
-            if match := re.search(r"([-\d.]+),\s*([-\d.]+)", self.location):
-                self.latitude = float(match.group(1))
-                self.longitude = float(match.group(2))
-        
         # Check if location data is valid (not 0.0, 0.0 null values)
         if self.latitude is not None and self.longitude is not None:
-            # Valid coordinates available
             self.location_available = True
         else:
             self.location_available = False
@@ -128,30 +131,33 @@ class Memory(BaseModel):
         return data
 
     def get_filename(self, has_overlay: bool = False, occurrence: int = 1) -> str:
-        """Get filename with optional '_overlayed' suffix for overlaid versions.
+        """Get filename based on UTC timestamp, with optional overlay suffix.
         
         Args:
             has_overlay: Whether this is an overlayed version
-            occurrence: Which occurrence of this timestamp (1-based). 
-                       For occurrence > 1, appends _v{occurrence} suffix to handle duplicates.
+            occurrence: Which occurrence of this timestamp (1-based).
+                       Suffix is added only for duplicates (occurrence >= 1).
         """
         ext = ".jpg" if self.media_type == MediaType.IMAGE else ".mp4"
-        base_name = self.date.strftime('%Y-%m-%d_%H-%M-%S')
+        # Always format filename using UTC to ensure stable, timezone-independent names
+        dt_utc = self.date.astimezone(timezone.utc)
+        base_name = dt_utc.strftime('%Y-%m-%d_%H-%M-%S')
         # Add version suffix for duplicates (timestamps with multiple entries)
-        version_suffix = f"_v{occurrence}" if occurrence > 1 else ""
+        version_suffix = f"_v{occurrence}" if occurrence >= 1 else ""
         overlay_suffix = "_overlayed" if has_overlay else ""
         prefix = f"{config.filename_prefix}_" if config.filename_prefix else ""
         return f"{prefix}{base_name}{version_suffix}{overlay_suffix}{ext}"
 
     def get_overlay_filename(self, occurrence: int = 1) -> str:
-        """Get filename for the overlay file (WebP format).
+        """Get filename for the overlay file (WebP), based on UTC timestamp.
         
         Args:
-            occurrence: Which occurrence of this timestamp (1-based). 
-                       For occurrence > 1, appends _v{occurrence} suffix to handle duplicates.
+            occurrence: Which occurrence of this timestamp (1-based).
+                       Suffix is added only for duplicates (occurrence >= 1).
         """
-        base_name = self.date.strftime('%Y-%m-%d_%H-%M-%S')
-        version_suffix = f"_v{occurrence}" if occurrence > 1 else ""
+        dt_utc = self.date.astimezone(timezone.utc)
+        base_name = dt_utc.strftime('%Y-%m-%d_%H-%M-%S')
+        version_suffix = f"_v{occurrence}" if occurrence >= 1 else ""
         prefix = f"{config.filename_prefix}_" if config.filename_prefix else ""
         return f"{prefix}{base_name}{version_suffix}_overlay.webp"
 
@@ -177,6 +183,7 @@ class Memory(BaseModel):
         the actual timezone where the memory was captured.
         
         Modifies self.date in-place to be timezone-aware in the local timezone.
+        Also stores the timezone name in self.timezone for audit/export purposes.
         """
         # Skip if location data is not available
         if not self.location_available:
@@ -196,6 +203,9 @@ class Memory(BaseModel):
             
             # Update the date field to be in the local timezone
             self.date = local_dt
+            
+            # Store timezone name for audit trail and export
+            self.timezone = tz_name
         
         except Exception as e:
             print(f"Failed to apply timezone for ({self.latitude}, {self.longitude}): {e}")

@@ -22,6 +22,8 @@ class Stats(BaseModel):
     # Both mode extra copies (separate files without overlay)
     extra_images_without_overlay: int = 0
     extra_videos_without_overlay: int = 0
+    # Duplicate timestamp groups (number of unique timestamps with >1 occurrence)
+    duplicate_timestamp_groups: int = 0
 
     def print_summary(self, elapsed_time: float) -> None:
         """Print comprehensive download statistics summary."""
@@ -38,6 +40,10 @@ class Stats(BaseModel):
         print(f"{'='*70}")
         print(f"Images:  {self.total_images:4d} total | {self.images_with_overlay:4d} with overlay | {self.images_without_overlay:4d} without overlay")
         print(f"Videos:  {self.total_videos:4d} total | {self.videos_with_overlay:4d} with overlay | {self.videos_without_overlay:4d} without overlay")
+        print(f"{'='*70}")
+        print("DUPLICATE TIMESTAMPS")
+        print(f"{'='*70}")
+        print(f"Timestamps with multiple occurrences: {self.duplicate_timestamp_groups}")
         if config.overlay_mode == OverlayMode.BOTH and (self.extra_images_without_overlay > 0 or self.extra_videos_without_overlay > 0):
             print(f"{'='*70}")
             print("BOTH MODE EXTRA COPIES")

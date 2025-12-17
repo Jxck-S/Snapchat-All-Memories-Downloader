@@ -15,21 +15,33 @@ from .download import download_all
 def load_memories(json_path: Path) -> tuple[dict, list[Memory]]:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     raw_memories = data.get("Saved Media", [])
-    
-    # Track occurrence count for each timestamp to handle duplicates
-    timestamp_count = {}
-    
-    memories = []
+
+    # Single-pass: keep a pointer to last seen memory per timestamp
+    last_by_key: dict[str, Memory] = {}
+    memories: list[Memory] = []
     for item in raw_memories:
         memory = Memory(**item)
-        # Count occurrences of this timestamp
-        timestamp = str(memory.date)
-        timestamp_count[timestamp] = timestamp_count.get(timestamp, 0) + 1
-        memory.occurrence = timestamp_count[timestamp]
+        # Prefer original 'Date' string when present, else snake_case, else parsed datetime string
+        key = item.get("Date") or item.get("date") or str(memory.date)
+
+        if key in last_by_key:
+            prev = last_by_key[key]
+            # When we see the second occurrence, bump the previous from 0 -> 1
+            if prev.occurrence == 0:
+                prev.occurrence = 1
+            # Current is previous + 1 (v2, v3, ...)
+            memory.occurrence = prev.occurrence + 1
+            # Update pointer to the latest for this key
+            last_by_key[key] = memory
+        else:
+            # First time seen: no suffix until we know there's a duplicate
+            memory.occurrence = 0
+            last_by_key[key] = memory
+
         memories.append(memory)
-    
+
     print(f"Found {len(memories)} memories in {json_path.name}")
     return data, memories
 

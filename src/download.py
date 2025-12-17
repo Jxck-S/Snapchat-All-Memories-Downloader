@@ -151,6 +151,10 @@ async def download_all(
 
     semaphore = asyncio.Semaphore(config.max_concurrent)
     stats = Stats()
+    # Count how many unique timestamps have multiple occurrences.
+    # This corresponds to memories whose first occurrence was bumped to 1
+    # when a duplicate was detected.
+    stats.duplicate_timestamp_groups = sum(1 for m in memories if m.occurrence == 1)
     start_time = time.time()
 
     # Filter memories to download
