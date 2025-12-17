@@ -1,0 +1,8 @@
+# Optional: Location Editor GUI dependencies
+# Install with: pip install -r requirements-location-editor.txt
+
+-r requirements.txt
+
+# Location Editor specific packages
+tkintermapview>=1.0
+imageio[pyav]>=2.9

@@ -125,3 +125,18 @@ python main.py memories_history.json --overlay both --ocr-metadata
 1. Make sure you get a fresh zip-file before running the script, links will expire over time
 2. If you are missing the `memories_history.json` file, make sure you selected the right options in the export configuration
 3. Still problems? please make a new [issue](https://github.com/ToTheMax/Snapchat-All-Memories-Downloader/issues) 
+
+## Location Editor Workflow
+- **Input:** Snapchat export JSON (e.g., [memories_history.json](memories_history.json)).
+- **Edit:** Launch the Location Editor GUI to add GPS coordinates for memories missing location.
+  - Run:
+    ```bash
+    python3 location_editor.py memories_history.json
+    ```
+  - During editing:
+    - Saved locations accumulate in [added_locations.json](added_locations.json).
+    - Use “Export to JSON” to create [memories_history_locations_added.json](memories_history_locations_added.json) with normalized keys and added coordinates.
+
+    
+- **Download:** Use the main downloader to process the new exported JSON 
+  
