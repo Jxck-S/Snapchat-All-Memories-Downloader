@@ -58,9 +58,8 @@ options:
                         Path to ffmpeg executable (default: ffmpeg in system PATH)
                         Required only when using --overlay with or --overlay both for video overlay merging
   --prefix PREFIX       Prefix to add to all downloaded filenames (e.g., 'SC_' creates 'SC_filename.ext')
-  --ocr-metadata        Run OCR on overlay text and embed extracted text into JSON metadata
+  --ocr-metadata        Run OCR on overlay text and embed extracted text into  metadata
                         Requires: --overlay with or --overlay both
-                        Creates output file: memories_history_ocr.json
   --copy-overlays       Save a copy of overlay files to 'overlays' subfolder
                         Requires: --overlay both
 ```
